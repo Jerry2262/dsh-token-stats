@@ -63,9 +63,14 @@ const cases = [
   ["tokenStats/getQuota", { args: { provider: "nope", force: false } }],
   ["tokenStats/getAllQuotas", { args: { force: false } }],
 ];
+// DSH 0.2.1-rc.2's gateway dispatches on behalf of a Peer: assertPeerLive
+// reads peer.signal.aborted and owner principals skip the remoteAccess
+// decision — pass the minimal live owner peer (the old signature's undefined
+// fourth argument used to get away with).
+const peer = { signal: new AbortController().signal, principal: { kind: "owner" } };
 for (const [endpoint, payload] of cases) {
   console.log(`[5] invokeRpc ${endpoint} …`);
-  const result = await gateway.invokeRpc(endpoint, payload, undefined, undefined);
+  const result = await gateway.invokeRpc(endpoint, payload, undefined, peer);
   console.log(`[5] ${endpoint} =>`, JSON.stringify(result, errorReplacer));
 }
 console.log("DONE");

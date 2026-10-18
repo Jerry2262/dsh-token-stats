@@ -6,6 +6,7 @@
  *   [3] a duplicate mount (the install->remove->install churn scenario, where
  *       the browser page stays open across graph changes)
  */
+import { existsSync } from "node:fs";
 import { Context } from "@deepseek-ai/cordis";
 import { TypertRegistry } from "@deepseek-ai/dsh-typert-registry";
 import { pathToFileURL } from "node:url";
@@ -23,9 +24,16 @@ globalThis.window.__ModuleLoader__ = {
     return clientLib;
   },
 };
-await import(
-  pathToFileURL("C:/Users/wwhby/AppData/Roaming/DeepSeek Harness Desktop/dsh/node_modules/@deepseek-ai/dsh-api-gateway/lib/client.js").href
-);
+// DSH 0.2.1-rc.2 split the gateway client bundle: lib/client.browser.js keeps
+// the __ModuleLoader__ wrapper this repro drives, lib/client.node.js is a
+// plain-ESM build, and older deployments shipped a single lib/client.js
+// wrapper. Prefer the browser wrapper, fall back to the legacy single file.
+const gatewayRoot =
+  "C:/Users/wwhby/AppData/Roaming/DeepSeek Harness Desktop/dsh/node_modules/@deepseek-ai/dsh-api-gateway";
+const gatewayBundle = existsSync(`${gatewayRoot}/lib/client.browser.js`)
+  ? `${gatewayRoot}/lib/client.browser.js`
+  : `${gatewayRoot}/lib/client.js`;
+await import(pathToFileURL(gatewayBundle).href);
 
 // 2. client-side context: typert registry + a connection stub.
 const ctx = new Context();
