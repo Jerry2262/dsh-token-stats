@@ -83,9 +83,10 @@ svc._quotaCache.zhipu = null;
 r = await svc.getQuota("zhipu", false);
 check("zhipu fixture parsed", r.value.ok === true && r.value.display.fiveHrPct === 80, JSON.stringify(r.value));
 
-// ====== mimo (v1.7.0)：本地用量兜底 + Cookie 升级官方剩余用量 ======
+// ====== mimo：与其他 provider 同规则（v1.8.0）+ Cookie 官方读数 ======
 // 实测：MiMo 没有 API Key 配额接口（token-plan-* 只有 /v1 推理 API），
-// 唯一配额源是 dashboard Cookie；所以默认零凭据可用。
+// 唯一配额源是 dashboard Cookie；没配 Cookie 就是 unconfigured（与其他
+// provider 一致），本地用量只在配过 Cookie 且 auth_failed 时静默降级出现。
 const mimoEnd = new Date(Date.now() + 72 * 3600e3).toISOString().slice(0, 19).replace("T", " ");
 const MIMO_COOKIE_OK = "api-platform_serviceToken=abc; userId=1";
 
@@ -100,16 +101,16 @@ function seedMimoUsage() {
   svc._addUsage("deepseek-official", "deepseek-chat", { inputTokens: 9e9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, now);
 }
 
-// mimo A: 无任何凭据 → 本地用量（零 HTTP）
+// mimo A: 无任何凭据 → unconfigured（v1.8.0 起与其他 provider 同规则，零 HTTP）
+seedMimoUsage(); // 供 C/D/I 的 auth_failed 降级断言复用（本地用量仍依赖聚合数据）
 {
-  seedMimoUsage();
   svc._quotaApiKey = async () => ({ apiKeyRef: null, apiKey: null, cookieRef: null, cookie: null });
   svc._httpGet = async () => { throw new Error("must not be called"); };
   svc._quotaCache.mimo = null;
   r = await svc.getQuota("mimo", false);
   check(
-    "mimo no creds → local usage (今日 3.2M · 7d 9.2M, 排除非 MiMo 模型)",
-    r.value.ok === true && r.value.display.balanceText === "今日 3.2M · 7d 9.2M" && r.value.display.weeklyPct === null,
+    "mimo no creds → unconfigured (same rule as other providers)",
+    r.value.ok === false && r.value.kind === "unconfigured" && r.value.message.indexOf("XIAOMI_MIMO_COOKIE") >= 0,
     JSON.stringify(r.value),
   );
 }
@@ -269,15 +270,41 @@ svc2[initKey]();
 const all = await svc2.getAllQuotas(false);
 check("getAllQuotas envelope", all && all.ok === true && all.value && typeof all.value.quotas === "object");
 check(
-  "getAllQuotas covers 6 providers; mimo always ok (local usage), others unconfigured",
-  ["minimax", "deepseek", "kimi", "openrouter", "zhipu"].every(
+  "getAllQuotas covers 6 providers; all unconfigured (mimo no longer local-usage by default)",
+  ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"].every(
     (p) => all.value.quotas[p] && all.value.quotas[p].ok === false && all.value.quotas[p].kind === "unconfigured",
-  ) &&
-    all.value.quotas.mimo &&
-    all.value.quotas.mimo.ok === true &&
-    typeof all.value.quotas.mimo.display.balanceText === "string",
+  ),
   JSON.stringify(all.value.quotas.mimo),
 );
+
+// credentials 未命中 → 回退 process.env（v1.8.0：XIAOMI_MIMO_COOKIE 无 UI 入口，
+// 环境变量是它唯一配置途径，不能只在 headless 部署生效）
+{
+  const calls = [];
+  delete svc._quotaApiKey; // 恢复真实解析路径（resolveList → resolveOne）
+  delete svc._quotaActiveRef["mimo:cookie"];
+  svc.ctx = { get: (n) => (n === "credentials" ? { resolve: async () => null } : undefined) };
+  process.env.XIAOMI_TOKEN_PLAN_CN_COOKIE = MIMO_COOKIE_OK; // cookieRefs 第二候选
+  try {
+    svc._httpGet = async (url, key) => {
+      calls.push({ url, key });
+      if (url.endsWith("/api/v1/user/usage")) {
+        return { ok: true, body: JSON.stringify({ percent: 55, resetDate: "2026-12-31" }) };
+      }
+      return { ok: false, kind: "auth_failed", httpStatus: 401, message: "HTTP 401" };
+    };
+    svc._quotaCache.mimo = null;
+    r = await svc.getQuota("mimo", false);
+    check(
+      "credentials miss → env fallback (XIAOMI_TOKEN_PLAN_CN_COOKIE) drives official path",
+      r.value.ok === true && r.value.display.balanceText === "剩余 55%" && calls.length === 1 && calls[0].key === MIMO_COOKIE_OK,
+      JSON.stringify({ value: r.value, calls }),
+    );
+  } finally {
+    delete process.env.XIAOMI_TOKEN_PLAN_CN_COOKIE;
+    svc.ctx = makeCtx();
+  }
+}
 
 // mimo J: cookie jar —— 服务端 Set-Cookie 续发会话要被吸收、用于后续请求并写回凭据库
 {

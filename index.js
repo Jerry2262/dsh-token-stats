@@ -1138,22 +1138,16 @@ export class TokenStatsService extends TypertRemoteService {
   // ---- quota / balance (套餐余额) --------------------------------------------
 
   /**
-   * Resolve the API key for one provider through the DSH credentials seam.
-   * Ref candidates follow the settings page's `<ROUTE>_API_KEY` derivation and
-   * each provider's shipped default `apiKeyEnv`; without the credentials
-   * service (headless deployment) the process environment is consulted.
-   */
-  /**
    * Resolve credentials for one provider through the DSH credentials seam.
    * Ref candidates follow the settings page's `<ROUTE>_API_KEY` derivation and
-   * each provider's shipped default `apiKeyEnv`; without the credentials
-   * service (headless deployment) the process environment is consulted.
+   * each provider's shipped default `apiKeyEnv`; the credentials service is
+   * always consulted first, and a miss falls back to the process environment
+   * (v1.8.0 — XIAOMI_MIMO_COOKIE has no UI entry, env is its only path).
    *
-   * v1.6.0 起，mimo 同时持有 API Key (Bearer) + Cookie (dashboard session) 两类
-   * 凭据；其他 provider 只用 API Key。返回值总是
-   *   { apiKey, apiKeyRef, cookie, cookieRef }，
-   * 未配置那一路为 null。`_quotaActiveRef[provider + ":api" | ":cookie"]` 按
-   * provider+kind 缓存上次命中的 ref（保持粘性，但不互锁）。
+   * mimo 只用 Cookie（dashboard session），其他 provider 只用 API Key。
+   * 返回值总是 { apiKey, apiKeyRef, cookie, cookieRef }，未配置那一路为
+   * null。`_quotaActiveRef[provider + ":api" | ":cookie"]` 按 provider+kind
+   * 缓存上次命中的 ref（保持粘性，但不互锁）。
    */
   async _quotaApiKey(provider) {
     const cfg = QUOTA_PROVIDERS[provider];
@@ -1164,15 +1158,21 @@ export class TokenStatsService extends TypertRemoteService {
     const cookieRefList = cfg.cookieRefs || [];
 
     const resolveOne = async (ref) => {
+      let hit = null;
       try {
         if (credentials && typeof credentials.resolve === "function") {
-          const hit = await credentials.resolve(ref);
-          if (hit && hit.value) return hit.value;
-        } else if (typeof process !== "undefined" && process.env && process.env[ref]) {
-          return process.env[ref];
+          hit = await credentials.resolve(ref);
         }
       } catch (e) {
-        /* try the next ref */
+        /* credentials 抛错也继续走环境变量回退 */
+      }
+      if (hit && hit.value) return hit.value;
+      // 回退进程环境变量（v1.8.0 起凭据库未命中也回退，不再只限 headless）：
+      // XIAOMI_MIMO_COOKIE 已无 UI 入口（mimo 卡片不再常驻），环境变量是它
+      // 唯一的配置途径；对其他 provider 这只是 credentials 优先之外多一条
+      // 宽松路径，不改变既有解析结果。
+      if (typeof process !== "undefined" && process.env && process.env[ref]) {
+        return process.env[ref];
       }
       return null;
     };
@@ -1422,15 +1422,24 @@ export class TokenStatsService extends TypertRemoteService {
     return next;
   }
 
-  /** MiMo 读数（v1.7.0）：官方 Cookie 优先，失败静默退回本地用量。 */
+  /** MiMo 读数（v1.8.0）：与其他 provider 同规则——没配 Cookie 就是 unconfigured
+   *  （composer ⚠、设置页无卡片）；配了走官方读数，仅 auth_failed 静默退回本地
+   *  用量（Cookie 过期不该变成刺眼的错误卡；本地用量只在这条降级路径出现）。 */
   async _fetchMimoQuota(_apiKey, _apiKeyRef, cookie, cookieRef) {
-    if (cookie) {
-      const official = await this._fetchMimoOfficial(cookie, cookieRef);
-      if (official.ok) return official;
-      // Cookie 失效（auth_failed）→ 不打扰用户，静默退回本地用量。
-      // 其余（套餐过期 / 解析失败 / 限流 / 5xx）都是真实状态，如实上报。
-      if (official.kind !== "auth_failed") return official;
+    if (!cookie) {
+      return {
+        ok: false,
+        provider: "mimo",
+        kind: "unconfigured",
+        message:
+          "未配置 MiMo Cookie (设置 XIAOMI_MIMO_COOKIE 环境变量：登录 platform.xiaomimimo.com 后从开发者工具复制完整 Cookie 请求头)",
+      };
     }
+    const official = await this._fetchMimoOfficial(cookie, cookieRef);
+    if (official.ok) return official;
+    // Cookie 失效（auth_failed）→ 不打扰用户，静默退回本地用量。
+    // 其余（套餐过期 / 解析失败 / 限流 / 5xx）都是真实状态，如实上报。
+    if (official.kind !== "auth_failed") return official;
     const local = this._mimoLocalUsage();
     return {
       ok: true,

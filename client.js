@@ -41,15 +41,6 @@ window.__ModuleLoader__.load({
 .ts-head-title{font-size:16px;font-weight:500;line-height:24px;margin:0;flex:1}
 .ts-refresh{box-sizing:border-box;height:28px;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:transparent;color:var(--dsw-alias-label-secondary);padding:0 12px;font-size:12px;line-height:26px}
 .ts-refresh:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}
-.ts-cred-block{display:flex;flex-direction:column;gap:8px}
-.ts-cred-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ts-cred-label{min-width:64px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.ts-cred-input{box-sizing:border-box;height:28px;flex:1;min-width:220px;font:inherit;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:0 10px;font-size:12px}
-.ts-cred-input:focus{outline:none;border-color:var(--dsw-alias-border-l1)}
-.ts-cred-save{box-sizing:border-box;height:28px;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:12px}
-.ts-cred-save:hover{border-color:var(--dsw-alias-border-l1)}
-.ts-cred-save:disabled{opacity:.5;cursor:default}
-.ts-cred-msg{font-size:12px;color:var(--dsw-alias-label-secondary)}
 .ts-status{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;min-height:18px}
 .ts-tabs{display:inline-flex;gap:4px;padding:3px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;align-self:flex-start}
 .ts-tab{box-sizing:border-box;height:26px;font:inherit;cursor:pointer;border:none;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:7px;padding:0 14px;font-size:13px;line-height:26px}
@@ -682,20 +673,9 @@ window.__ModuleLoader__.load({
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
         return null;
       }
-      // 凭据输入行（现在只剩 mimo 的 Cookie 行）写入的 ref — 与 host
-      // QUOTA_PROVIDERS.apiKeyRefs 首选项对齐。
-      // mimo 写 XIAOMI_MIMO_COOKIE（v1.7.0 起）：MiMo 没有开放任何 API Key
-      // 配额接口（token-plan-* 主机只有 /v1 推理 API，实测见 scripts/probe-mimo.mjs），
-      // 只有 dashboard 账号会话 Cookie 能拿到官方「剩余用量 %」。不填也不影响
-      // —— host 会退回本地用量统计。
-      const QUOTA_CRED_REFS = {
-        minimax: "MINIMAX_CN_API_KEY",
-        deepseek: "DEEPSEEK_API_KEY",
-        kimi: "KIMI_CODING_API_KEY",
-        openrouter: "OPENROUTER_API_KEY",
-        zhipu: "ZAI_CODING_CN_API_KEY",
-        mimo: "XIAOMI_MIMO_COOKIE",
-      };
+      // v1.8.0 起不再有凭据输入行：其他 provider 的 key 在 DSH 模型设置里配，
+      // mimo 的 Cookie（XIAOMI_MIMO_COOKIE）没有 UI 入口，只认环境变量（host 侧
+      // 凭据库未命中也会回退 process.env）——没配就是 unconfigured，与大家同规则。
       const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
       function quotaProviderLabel(p) {
@@ -995,10 +975,10 @@ window.__ModuleLoader__.load({
       }
 
       // ---- Settings 页余额区块 ----------------------------------------------
-      // 卡片 = 已配置的 provider；未配置 key 的 provider 什么都不显示（v1.7.2
+      // 卡片 = 已配置的 provider；未配置凭据的 provider 什么都不显示（v1.7.2
       // 起连「凭据设置」粘贴行也不渲染，用户反馈太吵）——key 在 DSH 模型设置里
-      // 配好后卡片自然出现。唯一例外是 mimo：零凭据可用（本地用量），保留一个
-      // 可选的 Cookie 升级入口（remote.credentials.set → force 重拉）。
+      // 配好后卡片自然出现。v1.8.0 起 mimo 同规则：没配 Cookie（XIAOMI_MIMO_COOKIE
+      // 环境变量）就无卡片；「本地用量」形态只在配过 Cookie 且失效降级时出现。
 
       function QuotaCard(props) {
         const p = props.provider;
@@ -1088,9 +1068,6 @@ window.__ModuleLoader__.load({
 
       function QuotaSection() {
         const [quotas, setQuotas] = React.useState(null);
-        const [credDrafts, setCredDrafts] = React.useState({});
-        const [credMsgs, setCredMsgs] = React.useState({});
-        const [credSaving, setCredSaving] = React.useState({});
         const load = React.useCallback(async (force) => {
           try {
             const payload = unwrapRemote(await remote.getAllQuotas(force === true));
@@ -1105,46 +1082,12 @@ window.__ModuleLoader__.load({
           return () => clearInterval(t);
         }, [load]);
 
-        const saveCred = React.useCallback(async (p, value) => {
-          const ref = QUOTA_CRED_REFS[p];
-          const trimmed = typeof value === "string" ? value.trim() : "";
-          if (!ref || !trimmed) return;
-          setCredSaving((s) => ({ ...s, [p]: true }));
-          try {
-            // 官方 credentials 命名空间（settings-models 同款用法；依赖已在
-            // exports.inject 声明——cordis 强制 inject 才能取服务属性，v1.5.5）。
-            const ns = (ctx.remote && ctx.remote.credentials) || ctx.get("remote.credentials");
-            if (!ns || typeof ns.set !== "function") throw new Error("credentials Remote 不可用");
-            const r = await ns.set(ref, trimmed);
-            if (r && r.ok) {
-              setCredDrafts((d) => ({ ...d, [p]: "" }));
-              setCredMsgs((m) => ({ ...m, [p]: "已保存，正在拉取…" }));
-              await load(true);
-              setCredMsgs((m) => ({ ...m, [p]: "已保存 ✓" }));
-            } else {
-              const msg = r && r.error && r.error.message ? r.error.message : "保存失败";
-              setCredMsgs((m) => ({ ...m, [p]: msg }));
-            }
-          } catch (e) {
-            setCredMsgs((m) => ({ ...m, [p]: e instanceof Error ? e.message : String(e) }));
-          } finally {
-            setCredSaving((s) => ({ ...s, [p]: false }));
-          }
-        }, [load]);
-
         if (!quotas) return null;
         const names = QUOTA_PROVIDER_ORDER.filter((p) => quotas[p]);
-        // 卡片 = 非 unconfigured；未配置 key 的 provider 不再进入任何渲染
-        // （既无卡片也无凭据行，v1.7.2）。
+        // 卡片 = 非 unconfigured；未配置凭据的 provider 不再进入任何渲染
+        // （v1.7.2；v1.8.0 起 mimo 也同规则——没配 Cookie 就是无卡片）。
         const configured = names.filter((p) => !(quotas[p] && quotas[p].ok === false && quotas[p].kind === "unconfigured"));
-        // mimo 零凭据可用（本地用量），永远不是 unconfigured；这里在它还处于
-        // 本地模式时补一个**可选**的 Cookie 入口——粘了就能升级成官方剩余用量 %。
-        const mimo = quotas.mimo;
-        const mimoLocalMode =
-          !!(mimo && mimo.ok === true) &&
-          typeof mimo.display === "object" &&
-          typeof mimo.display.weeklyPct !== "number";
-        if (configured.length === 0 && !mimoLocalMode) return null;
+        if (configured.length === 0) return null;
         return React.createElement(
           "div", { className: "ts-block" },
           React.createElement(
@@ -1168,38 +1111,6 @@ window.__ModuleLoader__.load({
             ? React.createElement(
                 "div", { className: "ts-quota-list" },
                 configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
-              )
-            : null,
-          // mimo 专用：可选的 dashboard Cookie —— 粘了把本地用量升级成官方
-          // 「剩余用量 % + 周重置」；不粘也能正常显示本地用量统计。
-          mimoLocalMode
-            ? React.createElement(
-                "div", { className: "ts-cred-block" },
-                React.createElement("div", { className: "ts-block-title" }, "MiMo 官方剩余用量（可选）"),
-                React.createElement(
-                  "div", { className: "ts-cred-row" },
-                  React.createElement("span", { className: "ts-cred-label" }, "Cookie"),
-                  React.createElement("input", {
-                    type: "password",
-                    className: "ts-cred-input",
-                    placeholder:
-                      "MiMo 未开放 API Key 配额接口；登录 platform.xiaomimimo.com 后从开发者工具复制完整 Cookie 请求头（含 api-platform_serviceToken 与 userId），可显示官方剩余 %（会过期，失效后自动退回本地用量）",
-                    value: credDrafts.mimo || "",
-                    onChange: (e) => setCredDrafts((d) => ({ ...d, mimo: e.target.value })),
-                    onKeyDown: (e) => {
-                      if (e.key === "Enter") saveCred("mimo", credDrafts.mimo || "");
-                    },
-                  }),
-                  React.createElement(
-                    "button", {
-                      className: "ts-cred-save",
-                      disabled: !!credSaving.mimo || !(credDrafts.mimo && credDrafts.mimo.trim()),
-                      onClick: () => saveCred("mimo", credDrafts.mimo || ""),
-                    },
-                    credSaving.mimo ? "保存中…" : "保存",
-                  ),
-                  credMsgs.mimo ? React.createElement("span", { className: "ts-cred-msg" }, credMsgs.mimo) : null,
-                ),
               )
             : null,
         );
@@ -1412,7 +1323,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply;
-    exports.inject = ["slots", "remote", "remote.credentials"];
+    exports.inject = ["slots", "remote"];
     return module.exports;
   },
 });
