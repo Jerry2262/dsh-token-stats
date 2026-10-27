@@ -23,7 +23,7 @@
  * launched Harness shell); without it the script reports SKIP and exits 0, so
  * CI runs without a profile stay green.
  */
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -105,14 +105,35 @@ const row = (composed ?? []).find((entry) => entry && entry.id === "token-stats"
 check("composed entries contain the token-stats row", row !== undefined, JSON.stringify((composed ?? []).map((entry) => entry?.id)));
 check("row mounts this package", row?.name === BUNDLE_NAME, JSON.stringify(row));
 
-// 4. the Host half must import through the profile's own link.
+// 4. the Host half must be loadable through the profile's own copy.
+//    link: 安装时 realpath 落回本仓库，裸 import 借工作区 junction 解析 peer；
+//    npm 安装时 realpath 在 profile node_modules 里，@deepseek-ai peer 不在
+//    profile 内（pnpm 隔离，peer missing 是常态），裸 Node 解析不到——真实
+//    宿主由 0.1.7+ 的内存路由表 + ESM/CJS 拦截把 peer 路由到 DSH 安装副本
+//    （AGENTS.md 0.1.7 节）。此时退而验证：Host 半声明的每个 @deepseek-ai
+//    peer 都能在部署 node_modules（install anchor 所在目录）里找到。
 const linkedIndex = join(profileDir, "node_modules", "@duke-dsh-plugins", "dsh-token-stats", "index.js");
 check("profile link exposes index.js", existsSync(linkedIndex));
+const realIndex = realpathSync(linkedIndex);
+const insideProfile = realIndex.startsWith(realpathSync(join(profileDir, "node_modules")));
 let hostHalf = null;
 try {
-  hostHalf = await import(pathToFileURL(realpathSync(linkedIndex)).href);
+  hostHalf = await import(pathToFileURL(realIndex).href);
+  check("Host half imports through the profile link", true);
 } catch (error) {
-  check("Host half imports through the profile link", false, String(error));
+  if (!insideProfile) {
+    check("Host half imports through the profile link", false, String(error));
+  } else {
+    const pkgJson = JSON.parse(readFileSync(join(dirname(realIndex), "package.json"), "utf8"));
+    const deployNodeModules = dirname(dirname(dirname(installAnchor))); // anchor = <nm>/@deepseek-ai/dsh/package.json
+    const wanted = Object.keys(pkgJson.peerDependencies || {}).filter((n) => n.startsWith("@deepseek-ai/"));
+    const missing = wanted.filter((n) => !existsSync(join(deployNodeModules, ...n.split("/"))));
+    check(
+      "Host half peers resolve from the DSH deployment (npm install → runtime peer routing)",
+      missing.length === 0,
+      missing.length ? "deployment node_modules missing: " + missing.join(", ") : String((error && error.message) || error),
+    );
+  }
 }
 if (hostHalf) {
   check("Host half exports the TokenStatsService class", typeof hostHalf.TokenStatsService === "function");
