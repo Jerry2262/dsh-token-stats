@@ -7,7 +7,10 @@
  *   - a stacked bar chart (per-model daily consumption over the range),
  *   - a donut + legend (per-model total share over the range),
  *   - a GitHub-contributions-style heatmap whose day range adapts to the
- *     container width (capped at one year / 365 days).
+ *     container width (capped at one year / 365 days),
+ *   - a cache-hit-rate summary card, plus the same rate in each bar's hover
+ *     tooltip, derived client-side from the existing per-model usage fields —
+ *     the Host, Typert manifest and persisted store format are untouched.
  *
  * It also registers a compact 套餐余额/用量 readout in the composer tool row
  * (`conversation.input.right`, immediately left of the model select — the
@@ -303,6 +306,30 @@ window.__ModuleLoader__.load({
         return String(n);
       }
 
+      /**
+       * Prompt-side cache hit rate. `input` is the UNCACHED input bucket (the
+       * Host folds `usage.inputTokens`, which dsh-llm-pi-ai maps from pi-ai's
+       * `usage.input`; cache read/write are separate buckets), so the prompt
+       * total is input + cacheRead + cacheWrite. Returns null when a record has
+       * no prompt tokens at all (output-only), so the UI can render "—".
+       */
+      function hitRateOf(rec) {
+        const prompt = (rec.input || 0) + (rec.cacheRead || 0) + (rec.cacheWrite || 0);
+        if (prompt <= 0) return null;
+        return (rec.cacheRead || 0) / prompt;
+      }
+
+      /** 0..1 → percentage copy; null → "—". Keeps whole numbers whole. */
+      function fmtPct(rate) {
+        if (rate == null || !Number.isFinite(rate)) return "—";
+        const p = rate * 100;
+        if (p <= 0) return "0%";
+        if (p < 0.1) return "<0.1%";
+        if (p >= 99.95) return "100%";
+        const rounded = Math.round(p * 10) / 10;
+        return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + "%";
+      }
+
       function keyOf(d) {
         return (
           d.getFullYear() +
@@ -368,6 +395,8 @@ window.__ModuleLoader__.load({
             sum.cacheWrite += m.cacheWrite;
           }
         }
+        sum.promptTokens = sum.input + sum.cacheRead + sum.cacheWrite;
+        sum.hitRate = sum.promptTokens > 0 ? sum.cacheRead / sum.promptTokens : null;
         return { dayList, rangeModels, sum };
       }
 
@@ -422,7 +451,11 @@ window.__ModuleLoader__.load({
               React.createElement(
                 "rect",
                 { key: "b" + i + "_" + m.key, x, y, width: barW, height: h, fill: colorOf[m.key] },
-                React.createElement("title", null, day.label + " · " + rec.name + ": " + fmtCompact(rec.total)),
+                React.createElement(
+                  "title",
+                  null,
+                  day.label + " · " + rec.name + ": " + fmtCompact(rec.total) + " · 命中 " + fmtPct(hitRateOf(rec)),
+                ),
               ),
             );
           }
@@ -624,6 +657,7 @@ window.__ModuleLoader__.load({
         const sum = props.sum;
         const items = [
           ["总 Tokens", fmtCompact(sum.total)],
+          ["缓存命中率", fmtPct(sum.hitRate)],
           ["输入(含缓存)", fmtCompact(sum.input + sum.cacheRead + sum.cacheWrite)],
           ["输出", fmtCompact(sum.output)],
         ];

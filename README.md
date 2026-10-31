@@ -24,7 +24,8 @@
 | 📈 堆叠柱状图 | 统计区间内**每个模型每天**的消耗（悬停查看具体数字） |
 | 🥧 饼图 | 统计区间内**每个模型的总消耗**占比 + 图例（精确值 + 百分比） |
 | 🔥 GitHub 风格热力图 | 「近一年」每日活跃；**天数随容器宽度自适应**，最多显示 365 天（一年） |
-| 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
+| 🗂 汇总卡片 | 区间总 Tokens / **缓存命中率** / 输入(含缓存) / 输出 |
+| 🧠 缓存命中率 | 汇总卡显示区间缓存命中率；堆叠柱状图悬停显示当天该模型的命中率 |
 | 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
 | 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）；60s 轮询，点击立即刷新 |
@@ -54,9 +55,9 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
 
 1. 打开 **设置** → **Token 统计**。
 2. 在 **近 7 天 / 近 30 天** 两个 Tab 间切换：
-   - 柱状图展示区间内每天、每个模型的消耗（堆叠）。
+   - 柱状图展示区间内每天、每个模型的消耗（堆叠；悬停可看当天该模型的缓存命中率）。
    - 饼图展示区间内每个模型的总消耗占比。
-   - 顶部卡片给出区间总 Tokens / 输入 / 输出。
+   - 顶部卡片给出区间总 Tokens / **缓存命中率** / 输入(含缓存) / 输出。
 3. 下方 **每日活跃** 热力图展示更长时间范围：格子越多 = 容器越宽，最多覆盖近一年。
 4. **会话输入框工具行**（model 选择器左侧）内联显示当前 provider 的套餐余额：
    - DeepSeek / OpenRouter 显示余额（如 `¥43.97` / `$12.50`）；
@@ -88,6 +89,7 @@ TokenStatsService.getQuota()   ← ctx.remote.tokenStats.getQuota(provider, forc
 ```
 
 - 数据按**本地日历天** × **模型**（`provider::model`）聚合；`total = input + output + cacheRead + cacheWrite`。
+- 缓存命中率由 **Client 侧**从现有的 per-model-day 字段（`input` 未命中输入 / `cacheRead` 缓存读 / `cacheWrite` 缓存写）派生，不新增 Host 方法、不改落盘格式；命中率 = 缓存读 ÷（未命中输入 + 缓存读 + 缓存写）。界面只在顶部汇总卡展示（柱状图悬停附带当天命中率），不额外占版面。
 - 历史回填只统计插件启动前发生的调用，实时监听只统计启动后的，两者通过每个会话的事件序号水位线合并，不会重复。
 - 模型/模型来自 `assistant/message` 的 `message.source`（kind = 'model'），无需自行解析请求头。
 - 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定；凭据库未命中时回退同名环境变量），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。**小米 MiMo 没有 API Key 配额接口**：配了 dashboard Cookie（`XIAOMI_MIMO_COOKIE`）走官方剩余用量 %，Cookie 失效时静默退回本地用量统计；未配置则与其他 provider 一样视为未配置。

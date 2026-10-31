@@ -10,6 +10,7 @@
 - **近 7 天 / 近 30 天** 两个 Tab（均包含今天）：堆叠柱状图（每天 × 每个模型）+ 饼图（每个模型区间总消耗）。
 - **GitHub 风格热力图**：近一年每日活跃，天数随容器宽度自适应（最多 365 天）。
 - **套餐余额读数**：composer 工具行内联显示当前 provider 的余额/用量（参考 dsh-musage，MIT），跟随当前模型自动切换。
+- **缓存命中率**：汇总卡显示区间命中率，柱状图悬停显示当天命中率（纯 Client 侧派生，无 Host/存储改动；**不要再加价格档位区块/各模型表**——用户反馈内容过多，顶部卡片就够）。
 - 数据来自 DSH **会话日志**（`assistant/message` 的 `usage`），按本地日 × 模型聚合，历史自动回填。
 
 ## 目录结构
@@ -26,6 +27,7 @@ dsh-token-stats/
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
 ├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
+├── scripts/smoke-cache.mjs          # 缓存命中率离线渲染冒烟：mini React 驱动真实 client bundle，断言顶部命中率卡/柱状图 tooltip，并断言价格档位区块不再出现
 ├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
 ├── scripts/smoke-compat.mjs         # 用部署侧 dsh-app-boot 的 evaluatePluginCompatibility 预检本包 manifest
 ├── scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上
@@ -173,12 +175,23 @@ window.__ModuleLoader__.load({
 - **`.ts-quota-pop` 宽度是 `min-width:230px + width:max-content + max-width:340px`**（v1.7.1 起）：短内容保持 230 的原观感，mimo 本地用量「本地用量 + 今日 X · 7d Y」这类长行自动放宽到一行放下，超 340 封顶换行。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
+### 8. 缓存命中率（纯 Client 派生，v1.9.0 计划）
+
+**不要为命中率改 Host / typert.host.js / stats.json 格式**——Host 返回的 per-model-day 记录早就带齐四个分项，Client 侧 `buildRange` 直接聚合即可：
+
+- `input` 就是**未缓存输入**：`dsh-llm-pi-ai` 的 `mapUsage` 把 pi-ai 的 `usage.input` 映射成 `inputTokens`（pi-ai 里 `input` 是扣掉 cache 的桶），`cacheReadTokens`/`cacheWriteTokens` **仅在 >0 时出现**（`...usage.cacheRead > 0 ? {...} : {}`），缺失按 0 处理；`total = input + output + cacheRead + cacheWrite`。
+- **命中率 = cacheRead ÷ (input + cacheRead + cacheWrite)**（提示词侧；output 不参与）。无提示词 token 时返回 null，UI 显示 `—`，不要除零。
+- Client `buildRange` 只把 `sum.promptTokens` / `sum.hitRate` 算出来供汇总卡用（`rangeModels` 保持原样，不聚合四档）；汇总卡是 `总 Tokens / 缓存命中率 / 输入(含缓存) / 输出`，柱状图 tooltip 带当天命中率。**不要恢复「缓存命中率 · 价格档位」区块、堆叠条、图例或各模型表**——v1.9.0 曾实现，用户反馈内容太多，只保留顶部卡片。
+- 真实数据里 DeepSeek / Codex / GLM 的 cacheRead 是大量存在的（本机实测 96–99%），不是理论字段；`cacheWrite` 这几家基本恒 0，属正常。
+- 回归：`npm run smoke:cache`（离线渲染，无需 DSH）。改公式/文案/结构时同步改 `scripts/smoke-cache.mjs` 的断言。
+
 ## 开发 / 验证
 
 ```bash
 npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含启动预演；最终验收命令）
 npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
+npm run smoke:cache      # 缓存命中率离线渲染冒烟（mini React 驱动 client bundle，无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
 npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
 npm run smoke:compat     # 用部署侧 dsh-app-boot 真兼容门预检 manifest（防"静默跳过"，见 0.2.0 小节）
